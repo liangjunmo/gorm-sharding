@@ -268,9 +268,10 @@ func (s *Sharding) switchConn(db *gorm.DB) {
 	// information by table name during the migration.
 	if _, ok := db.Get(ShardingIgnoreStoreKey); !ok {
 		s.mutex.Lock()
-		if s.ConnPool == nil {
-			s.ConnPool = &ConnPool{ConnPool: db.Statement.ConnPool, sharding: s}
-			db.Statement.ConnPool = s.ConnPool
+		if db.Statement.ConnPool != nil {
+			if _, ok := db.Statement.ConnPool.(ConnPool); !ok {
+				db.Statement.ConnPool = &ConnPool{ConnPool: db.Statement.ConnPool, sharding: s}
+			}
 		}
 		s.mutex.Unlock()
 	}
