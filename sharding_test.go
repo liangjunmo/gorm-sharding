@@ -33,7 +33,7 @@ func databaseURL() string {
 	databaseURL := os.Getenv("DATABASE_URL")
 	if len(databaseURL) == 0 {
 		databaseURL = "postgres://localhost:5432/sharding-test?sslmode=disable"
-		if os.Getenv("DIALECTOR") == "mysql" {
+		if mysqlDialector() {
 			databaseURL = "root@tcp(127.0.0.1:3306)/sharding-test?charset=utf8mb4"
 		}
 	}
@@ -44,7 +44,7 @@ func databaseReadURL() string {
 	databaseURL := os.Getenv("DATABASE_READ_URL")
 	if len(databaseURL) == 0 {
 		databaseURL = "postgres://localhost:5432/sharding-read-test?sslmode=disable"
-		if os.Getenv("DIALECTOR") == "mysql" {
+		if mysqlDialector() {
 			databaseURL = "root@tcp(127.0.0.1:3306)/sharding-read-test?charset=utf8mb4"
 		}
 	}
@@ -55,7 +55,7 @@ func databaseWriteURL() string {
 	databaseURL := os.Getenv("DATABASE_WRITE_URL")
 	if len(databaseURL) == 0 {
 		databaseURL = "postgres://localhost:5432/sharding-write-test?sslmode=disable"
-		if os.Getenv("DIALECTOR") == "mysql" {
+		if mysqlDialector() {
 			databaseURL = "root@tcp(127.0.0.1:3306)/sharding-write-test?charset=utf8mb4"
 		}
 	}
@@ -83,7 +83,7 @@ var (
 )
 
 func init() {
-	if os.Getenv("DIALECTOR") == "mysql" {
+	if mysqlDialector() {
 		db, _ = gorm.Open(mysql.Open(databaseURL()), &gorm.Config{
 			DisableForeignKeyConstraintWhenMigrating: true,
 		})
@@ -175,7 +175,7 @@ func TestMigrate(t *testing.T) {
 
 	// auto migrate again
 	err := db.AutoMigrate(&Order{}, &Category{})
-	assert.Equal(t, err, nil)
+	assert.Equal[error, error](t, err, nil)
 }
 
 func TestInsert(t *testing.T) {
@@ -192,7 +192,7 @@ func TestFillID(t *testing.T) {
 
 func TestInsertManyWithFillID(t *testing.T) {
 	err := db.Create([]Order{{UserID: 100, Product: "Mac"}, {UserID: 100, Product: "Mac Pro"}}).Error
-	assert.Equal(t, err, nil)
+	assert.Equal[error, error](t, err, nil)
 
 	expected := `INSERT INTO orders_0 ("user_id", "product", id) VALUES ($1, $2, $sfid), ($3, $4, $sfid) RETURNING "id"`
 	lastQuery := middleware.LastQuery()
@@ -293,7 +293,7 @@ func TestSelectMissingShardingKey(t *testing.T) {
 func TestSelectNoSharding(t *testing.T) {
 	sql := toDialect(`SELECT /* nosharding */ * FROM "orders" WHERE "product" = 'iPad'`)
 	err := db.Exec(sql).Error
-	assert.Equal(t, nil, err)
+	assert.Equal[error](t, nil, err)
 }
 
 func TestNoEq(t *testing.T) {
@@ -303,7 +303,7 @@ func TestNoEq(t *testing.T) {
 
 func TestShardingKeyOK(t *testing.T) {
 	err := db.Model(&Order{}).Where("user_id = ? and id > ?", 101, int64(100)).Find(&[]Order{}).Error
-	assert.Equal(t, nil, err)
+	assert.Equal[error](t, nil, err)
 }
 
 func TestShardingKeyNotOK(t *testing.T) {
@@ -313,7 +313,7 @@ func TestShardingKeyNotOK(t *testing.T) {
 
 func TestShardingIdOK(t *testing.T) {
 	err := db.Model(&Order{}).Where("id = ? and user_id > ?", int64(101), 100).Find(&[]Order{}).Error
-	assert.Equal(t, nil, err)
+	assert.Equal[error](t, nil, err)
 }
 
 func TestNoSharding(t *testing.T) {
@@ -324,7 +324,7 @@ func TestNoSharding(t *testing.T) {
 
 func TestPKSnowflake(t *testing.T) {
 	var db *gorm.DB
-	if os.Getenv("DIALECTOR") == "mysql" {
+	if mysqlDialector() {
 		db, _ = gorm.Open(mysql.Open(databaseURL()), &gorm.Config{
 			DisableForeignKeyConstraintWhenMigrating: true,
 		})
@@ -347,7 +347,7 @@ func TestPKSnowflake(t *testing.T) {
 }
 
 func TestPKPGSequence(t *testing.T) {
-	if os.Getenv("DIALECTOR") == "mysql" {
+	if mysqlDialector() {
 		return
 	}
 
@@ -369,12 +369,12 @@ func TestReadWriteSplitting(t *testing.T) {
 	dbWrite.Exec("INSERT INTO orders_0 (id, product, user_id) VALUES(1, 'iPad', 100)")
 
 	var db *gorm.DB
-	if os.Getenv("DIALECTOR") == "mysql" {
-		db, _ = gorm.Open(mysql.Open(databaseURL()), &gorm.Config{
+	if mysqlDialector() {
+		db, _ = gorm.Open(mysql.Open(databaseWriteURL()), &gorm.Config{
 			DisableForeignKeyConstraintWhenMigrating: true,
 		})
 	} else {
-		db, _ = gorm.Open(postgres.New(dbConfig), &gorm.Config{
+		db, _ = gorm.Open(postgres.New(dbWriteConfig), &gorm.Config{
 			DisableForeignKeyConstraintWhenMigrating: true,
 		})
 	}
@@ -390,7 +390,7 @@ func TestReadWriteSplitting(t *testing.T) {
 	assert.Equal(t, "iPad", order.Product)
 
 	db.Model(&Order{}).Where("user_id", 100).Update("product", "iPhone")
-	db.Table("orders_0").Where("user_id", 100).Find(&order)
+	db.Clauses(dbresolver.Read).Table("orders_0").Where("user_id", 100).Find(&order)
 	assert.Equal(t, "iPad", order.Product)
 
 	dbWrite.Table("orders_0").Where("user_id", 100).Find(&order)
@@ -408,6 +408,10 @@ func toDialect(sql string) string {
 		r := regexp.MustCompile(`\$([0-9]+)`)
 		sql = r.ReplaceAllString(sql, "?")
 		sql = strings.ReplaceAll(sql, " RETURNING `id`", "")
+	} else if os.Getenv("DIALECTOR") == "mariadb" {
+		sql = strings.ReplaceAll(sql, `"`, "`")
+		r := regexp.MustCompile(`\$([0-9]+)`)
+		sql = r.ReplaceAllString(sql, "?")
 	}
 	return sql
 }
@@ -439,4 +443,8 @@ func assertSfidQueryResult(t *testing.T, expected, lastQuery string) {
 	}
 
 	assert.Equal(t, toDialect(expected), lastQuery)
+}
+
+func mysqlDialector() bool {
+	return os.Getenv("DIALECTOR") == "mysql" || os.Getenv("DIALECTOR") == "mariadb"
 }
