@@ -270,10 +270,8 @@ func (s *Sharding) switchConn(db *gorm.DB) {
 	if _, ok := db.Get(ShardingIgnoreStoreKey); !ok {
 		s.mutex.Lock()
 		if db.Statement.ConnPool != nil {
-			if _, ok = db.Statement.ConnPool.(ConnPool); !ok {
-				s.ConnPool = &ConnPool{ConnPool: db.Statement.ConnPool, sharding: s}
-				db.Statement.ConnPool = s.ConnPool
-			}
+			s.ConnPool = &ConnPool{ConnPool: db.Statement.ConnPool, sharding: s}
+			db.Statement.ConnPool = s.ConnPool
 		}
 		s.mutex.Unlock()
 	}
